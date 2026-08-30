@@ -1,0 +1,222 @@
+include:
+  - local: ci/stages.yaml
+  - local: ci/connect-to-registry.yaml
+  - local: ci/prepare-ci-client.yaml
+  - local: ci/install-helm.yaml
+  - local: ci/prepare-helm-deploy.yaml
+  - template: Security/SAST.gitlab-ci.yml
+
+build-backend-code-job:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.9.0-debug
+    entrypoint: [""]
+  extends: .connect_to_registry
+  script:
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}/backend"
+      --dockerfile "${CI_PROJECT_DIR}/backend/Dockerfile"
+      --destination "${YC_REGISTRY}/momo-store-backend:$CI_COMMIT_SHA"
+      --build-arg VERSION=$VERSION
+      --cache=true
+      --cache-repo="${YC_REGISTRY}/momo-store-backend-cache"
+  after_script:
+    - rm -rf /kaniko
+
+semgrep-sast:
+  stage: test
+  needs:
+    - build-backend-code-job
+  variables:
+    COMPILE: "false"
+    SAST_GO_VERSION: "1.19"
+
+go-test:
+  stage: test
+  image: golang:1.19
+  needs:
+    - build-backend-code-job
+  script:
+    - cd backend
+    - go mod download
+    - go test ./... -coverprofile=coverage.out
+    - go tool cover -func=coverage.out | tee coverage.txt
+  coverage: '/total:\s+\(statements\)\s+(\d+\.\d+)%/'
+  artifacts:
+    when: always
+    paths:
+      - backend/coverage.out
+      - backend/coverage.txt
+
+go-lint:
+  stage: test
+  image: golangci/golangci-lint:v1.55
+  needs:
+    - build-backend-code-job
+  script:
+    - cd backend
+    - golangci-lint run
+
+upload-backend-release-debug:
+  variables:
+    GIT_STRATEGY: none
+  image:
+    name: gcr.io/go-containerregistry/crane:debug
+    entrypoint: [ "" ]
+  cache: [ ]
+  stage: release-debug
+  needs:
+    - go-lint
+    - go-test
+  extends: .connect_to_registry
+  script:
+    - crane tag "$YC_REGISTRY/momo-store-backend:$CI_COMMIT_SHA" "$VERSION"
+  after_script:
+    - rm -rf /kaniko
+
+deploy-backend-debug:
+  stage: deploy-debug
+  environment:
+    name: deploy-debug
+    url: http://$DEV_HOST
+  needs:
+   - upload-backend-release-debug
+  image: 
+    name: docker:29.1.5-cli
+    entrypoint: [ "" ]
+  extends: .prepare_ci_client
+  script: 
+    # Логинимся к YC Registry прямо в SSH-контексте
+    - docker --context remote-vm login -u json_key -p "$(cat key.json)" cr.yandex
+
+    - docker --context remote-vm pull ${YC_REGISTRY}/momo-store-backend:${VERSION}
+
+    # Останавливаем и удаляем старый контейнер (если есть)
+    - docker --context remote-vm compose -f ./docker-compose.yml rm -sf backend
+
+    # Запускаем контейнер с новым образом и чистым кэшем
+    - docker --context remote-vm compose -f ./docker-compose.yml up -d --force-recreate --build backend
+
+    # Проверяем статус
+    - docker --context remote-vm ps
+    - echo "✅ Backend stage is ready! Check http://${DEV_HOST} 👀"
+  after_script:
+    - rm key.json
+
+release-backend-stage-helm:
+  stage: release-stage
+  image:
+    name: alpine:latest
+    entrypoint: [ "" ]
+  needs:
+    - upload-backend-release-debug
+  extends: .install_helm
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    # создаём пакет чарта
+    - helm repo add nexus $NEXUS_REPO_URL/repository/momo-helm/ --username "$NEXUS_USER" --password "$NEXUS_PASS"
+    - CHART_VERSION="0.0.$CI_PIPELINE_IID"
+    - helm package chart -d . --version "$CHART_VERSION" --app-version "$CI_COMMIT_SHA"
+    # пушим пакет в Nexus
+    - curl -u $NEXUS_USER:$NEXUS_PASS --upload-file "momo-store-$CHART_VERSION.tgz" "$NEXUS_REPO_URL/repository/momo-helm/momo-store-$CHART_VERSION.tgz"
+  after_script:
+    - rm -rf $(pwd)/key.json
+
+deploy-backend-stage-job:
+  stage: deploy-stage
+  environment:
+    name: deploy-stage
+    url: http://$STAGE_HOST
+  image:
+    name: alpine:latest
+    entrypoint: [ "" ]
+  needs:
+    - release-backend-stage-helm
+  extends: .prepare_helm_deploy
+  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - helm repo add nexus $NEXUS_REPO_URL/repository/momo-helm/ --username "$NEXUS_USER" --password "$NEXUS_PASS"
+    - helm repo update
+    - CHART_VERSION="0.0.$CI_PIPELINE_IID"
+    - |
+      helm upgrade --install $STAGE_RELEASE_NAME \
+      nexus/momo-store \
+      --namespace $STAGE_RELEASE_NAME \
+      --create-namespace \
+      --version "$CHART_VERSION" \
+      --values chart/values.yaml \
+      --set momobackend.image.tag="$CI_COMMIT_SHA" \
+      --set momofrontend.image.tag="$FRONTEND_SHA" \
+      --set momofrontend.ingress.tls[0].hosts[0]=$STAGE_HOST \
+      --set momofrontend.ingress.rules[0].host=$STAGE_HOST
+    - echo "✅ Backend stage is ready! Check http://$STAGE_HOST 👀"
+  after_script:
+    - rm -rf $(pwd)/key.json
+
+upload-backend-release-prod:
+  variables:
+    GIT_STRATEGY: none
+  image:
+    name: gcr.io/go-containerregistry/crane:debug
+    entrypoint: [ "" ]
+  needs:
+    - deploy-backend-stage-job
+  cache: [ ]
+  stage: release-prod
+  extends: .connect_to_registry
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - crane tag "$YC_REGISTRY/momo-store-backend:$CI_COMMIT_SHA" "stable"
+  after_script:
+   - rm -rf /kaniko
+
+update-backend-sha:
+  stage: pre-deploy-prod
+  needs:
+    - upload-backend-release-prod
+  script:
+    - |
+      curl --request PUT "https://gitlab.praktikum-services.ru/api/v4/projects/$CI_PROJECT_ID/variables/BACKEND_SHA" \
+        --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+        --form "value=${CI_COMMIT_SHA}" \
+        --form "raw=true"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy-backend-prod:
+  stage: deploy-prod
+  environment:
+    name: deploy-prod
+    url: http://$PROD_HOST
+  image:
+    name: alpine:latest
+    entrypoint: [ "" ]
+  needs:
+    - update-backend-sha
+  extends: .prepare_helm_deploy
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  when: manual
+  script:
+    - helm repo add nexus $NEXUS_REPO_URL/repository/momo-helm/ --username "$NEXUS_USER" --password "$NEXUS_PASS"
+    - helm repo update
+    - CHART_VERSION="0.0.$CI_PIPELINE_IID"
+    - |
+      helm upgrade --install $PROD_RELEASE_NAME \
+      nexus/momo-store \
+      --namespace $PROD_RELEASE_NAME \
+      --create-namespace \
+      --version "$CHART_VERSION" \
+      --set momofrontend.image.tag="$FRONTEND_SHA" \
+      --set momobackend.image.tag="$BACKEND_SHA" \
+      --set momofrontend.ingress.tls[0].hosts[0]=$PROD_HOST \
+      --set momofrontend.ingress.rules[0].host=$PROD_HOST \
+      --values chart/values.yaml \
+      --wait --timeout 5m
+    - echo "✅ Backend prod is ready! Check http://$PROD_HOST 👀"
+  after_script:
+    - rm -rf $(pwd)/key.json

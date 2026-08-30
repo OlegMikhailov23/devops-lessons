@@ -1,0 +1,16 @@
+.prepare_ci_client:
+  before_script:
+    - |
+        apk add --no-cache openssh-client curl bash
+        eval $(ssh-agent -s)
+        echo "$SSH_PRIVATE_KEY_B64" | base64 -d | tr -d '\r' | ssh-add -
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+        chmod 644 ~/.ssh/known_hosts
+    # Docker SSH context
+    - docker context create remote-vm --docker "host=ssh://${DEV_USER}@${DEV_HOST}" || true
+    - docker context use remote-vm
+
+    # Декодируем сервисный ключ YC для registry login
+    - echo "$YC_SERVICE_ACCOUNT_KEY_JSON_B64" | base64 -d > key.json

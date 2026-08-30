@@ -1,0 +1,8 @@
+.connect_to_registry:
+  before_script:
+    - mkdir -p /kaniko
+    - echo "$YC_SERVICE_ACCOUNT_KEY_JSON_B64" | base64 -d  > /kaniko/key.json
+    - mkdir -p /kaniko/.docker
+    - AUTH=$(echo -n "json_key:$(echo $YC_SERVICE_ACCOUNT_KEY_JSON_B64 | base64 -d)" | base64 -w0)
+    - echo "{\"auths\":{\"cr.yandex\":{\"auth\":\"$AUTH\"}}}" > /kaniko/.docker/config.json
+    - export DOCKER_CONFIG=/kaniko/.docker

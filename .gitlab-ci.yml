@@ -1,0 +1,36 @@
+include:
+  - local: ci/stages.yaml
+
+variables:
+    VERSION: 0.0.${CI_PIPELINE_ID}
+    YC_REGISTRY: cr.yandex/$YC_REGISTRY_ID
+
+trigger_backend:
+  stage: trigger_downstream
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+      - backend/**/*
+  trigger: 
+    include: backend/.gitlab-ci.yml
+    strategy: depend
+
+trigger_frontend:
+  stage: trigger_downstream
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+      - frontend/**/*
+  trigger: 
+    include: frontend/.gitlab-ci.yml
+    strategy: depend
+
+trigger_infra:
+  stage: trigger_downstream
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+      - infra/**/*
+  trigger: 
+    include: infra/terraform/.gitlab-ci.yml
+    strategy: depend

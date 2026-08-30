@@ -1,0 +1,208 @@
+include:
+  - local: ci/stages.yaml
+  - local: ci/connect-to-registry.yaml
+  - local: ci/prepare-ci-client.yaml
+  - local: ci/install-helm.yaml
+  - local: ci/prepare-helm-deploy.yaml
+  - template: Security/SAST.gitlab-ci.yml
+
+build-frontend-code-job:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:v1.9.0-debug
+    entrypoint: [""]
+  extends: .connect_to_registry
+  script:
+    - echo $CI_COMMIT_BRANCH
+    - echo $CI_COMMIT_REF_NAME
+    - echo $CI_PIPELINE_SOURCE
+    - /kaniko/executor
+      --context "${CI_PROJECT_DIR}/frontend"
+      --dockerfile "${CI_PROJECT_DIR}/frontend/Dockerfile"
+      --destination "${YC_REGISTRY}/momo-store-frontend:$CI_COMMIT_SHA"
+      --build-arg VERSION=$VERSION
+      --cache=true
+      --cache-repo="${YC_REGISTRY}/momo-store-frontend-cache"
+  after_script:
+    - rm -rf /kaniko
+
+semgrep-sast:
+  stage: test
+  needs:
+    - build-frontend-code-job
+  variables:
+    SAST_EXCLUDED_PATHS: node_modules,dist,coverage
+
+typecheck:
+  stage: test
+  image: node:16
+  needs:
+    - build-frontend-code-job
+  script: 
+    - cd frontend
+    - npm ci
+    - npm run typecheck
+
+upload-frontend-release-debug:
+  variables:
+    GIT_STRATEGY: none
+  image:
+    name: gcr.io/go-containerregistry/crane:debug
+    entrypoint: [ "" ]
+  cache: [ ]
+  stage: release-debug
+  needs:
+    - semgrep-sast
+    - typecheck
+  extends: .connect_to_registry
+  script:
+    - crane tag "$YC_REGISTRY/momo-store-frontend:$CI_COMMIT_SHA" "$VERSION"
+  after_script:
+   - rm -rf /kaniko
+
+deploy-frontend-debug:
+  stage: deploy-debug
+  environment:
+    name: deploy-debug
+    url: http://$DEV_HOST
+  needs:
+   - upload-frontend-release-debug
+  image: 
+    name: docker:29.1.5-cli
+    entrypoint: [ "" ]
+  extends: .prepare_ci_client
+  script: 
+    # Логинимся к YC Registry прямо в SSH-контексте
+    - docker --context remote-vm login -u json_key -p "$(cat key.json)" cr.yandex
+
+    - docker --context remote-vm pull ${YC_REGISTRY}/momo-store-frontend:${VERSION}
+
+    # Останавливаем и удаляем старый контейнер (если есть)
+    - docker --context remote-vm compose -f ./docker-compose.yml rm -sf frontend
+
+    # Запускаем контейнер с новым образом и чистым кэшем
+    - docker --context remote-vm compose -f ./docker-compose.yml up -d --force-recreate --build frontend
+
+    # Проверяем статус
+    - docker --context remote-vm ps
+    - echo "✅ Frontend stage is ready! Check http://${DEV_HOST} 👀"
+  after_script:
+    - rm key.json
+
+release-frontend-stage-helm:
+  stage: release-stage
+  image:
+    name: alpine:latest
+    entrypoint: [ "" ]
+  needs:
+    - upload-frontend-release-debug
+  extends: .install_helm
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    # создаём пакет чарта
+    - helm repo add nexus $NEXUS_REPO_URL/repository/momo-helm/ --username "$NEXUS_USER" --password "$NEXUS_PASS"
+    - CHART_VERSION="0.0.$CI_PIPELINE_IID"
+    - helm package chart -d . --version "$CHART_VERSION" --app-version "$CI_COMMIT_SHA"
+    # пушим пакет в Nexus
+    - curl -u $NEXUS_USER:$NEXUS_PASS --upload-file "momo-store-$CHART_VERSION.tgz" "$NEXUS_REPO_URL/repository/momo-helm/momo-store-$CHART_VERSION.tgz"
+  after_script:
+    - rm -rf $(pwd)/key.json
+
+deploy-frontend-stage-job:
+  stage: deploy-stage
+  environment:
+    name: deploy-stage
+    url: http://$STAGE_HOST
+  image:
+    name: alpine:latest
+    entrypoint: [ "" ]
+  needs:
+    - release-frontend-stage-helm
+  extends: .prepare_helm_deploy
+  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - helm repo add nexus $NEXUS_REPO_URL/repository/momo-helm/ --username "$NEXUS_USER" --password "$NEXUS_PASS"
+    - helm repo update
+    - CHART_VERSION="0.0.$CI_PIPELINE_IID"
+    - |
+      helm upgrade --install $STAGE_RELEASE_NAME \
+      nexus/momo-store \
+      --namespace $STAGE_RELEASE_NAME \
+      --create-namespace \
+      --version "$CHART_VERSION" \
+      --values chart/values.yaml \
+      --set momofrontend.image.tag="$CI_COMMIT_SHA" \
+      --set momobackend.image.tag="$BACKEND_SHA" \
+      --set momofrontend.ingress.tls[0].hosts[0]=$STAGE_HOST \
+      --set momofrontend.ingress.rules[0].host=$STAGE_HOST
+    - echo "✅ Frontend stage is ready! Check http://$STAGE_HOST 👀"
+  after_script:
+    - rm -rf $(pwd)/key.json
+
+upload-frontend-release-prod:
+  variables:
+    GIT_STRATEGY: none
+  image:
+    name: gcr.io/go-containerregistry/crane:debug
+    entrypoint: [ "" ]
+  needs:
+    - deploy-frontend-stage-job
+  cache: [ ]
+  stage: release-prod
+  extends: .connect_to_registry
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - crane tag "$YC_REGISTRY/momo-store-frontend:$CI_COMMIT_SHA" "stable"
+  after_script:
+   - rm -rf /kaniko
+
+update-frontend-sha:
+  stage: pre-deploy-prod
+  needs:
+    - upload-frontend-release-prod
+  script:
+    - |
+      curl --request PUT "https://gitlab.com/api/v4/projects/$CI_PROJECT_ID/variables/FRONTEND_SHA" \
+        --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+        --form "value=${CI_COMMIT_SHA}" \
+        --form "raw=true"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+deploy-frontend-prod:
+  stage: deploy-prod
+  environment:
+    name: deploy-prod
+    url: http://$PROD_HOST
+  image:
+    name: alpine:latest
+    entrypoint: [ "" ]
+  needs:
+    - update-frontend-sha
+  extends: .prepare_helm_deploy
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  when: manual
+  script:
+    - helm repo add nexus $NEXUS_REPO_URL/repository/momo-helm/ --username "$NEXUS_USER" --password "$NEXUS_PASS"
+    - helm repo update
+    - CHART_VERSION="0.0.$CI_PIPELINE_IID"
+    - |
+      helm upgrade --install $PROD_RELEASE_NAME \
+      nexus/momo-store \
+      --namespace $PROD_RELEASE_NAME \
+      --create-namespace \
+      --version "$CHART_VERSION" \
+      --set momofrontend.image.tag="$FRONTEND_SHA" \
+      --set momobackend.image.tag="$BACKEND_SHA" \
+      --set momofrontend.ingress.tls[0].hosts[0]=$PROD_HOST \
+      --set momofrontend.ingress.rules[0].host=$PROD_HOST \
+      --values chart/values.yaml \
+      --wait --timeout 5m
+    - echo "✅ Frontend prod is ready! Check http://$PROD_HOST 👀"
+  after_script:
+    - rm -rf $(pwd)/key.json

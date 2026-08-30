@@ -1,0 +1,6 @@
+apiVersion: v2
+name: momo-frontend
+description: Helm chart для деплоя momo-frontend сервиса
+type: application
+version: 0.0.1
+appVersion: "0.0.1"

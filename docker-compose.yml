@@ -1,0 +1,24 @@
+services:
+  backend:
+    build: ./backend
+    container_name: momo_store_backend
+    networks:
+      - momo_networks
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+
+  frontend:
+    build: ./frontend
+    container_name: momo_store_frontend
+    networks:
+      - momo_networks
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+networks:
+  momo_networks:
+    driver: bridge

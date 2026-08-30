@@ -1,0 +1,23 @@
+.prepare_helm_deploy:
+    before_script:
+    - apk add --no-cache curl bash tar gzip
+    # ставим Helm
+    - curl -fsSL https://get.helm.sh/helm-v3.12.0-linux-amd64.tar.gz | tar -xz
+    - mv linux-amd64/helm /usr/local/bin/helm
+    # kubectl (если ещё нет)
+    - curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    - chmod +x kubectl
+    - mv kubectl /usr/local/bin/
+    - mkdir -p ~/.kube
+    # Копируем kubeconfig (или генерируем через yc)
+    - curl https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+    - export PATH=/root/yandex-cloud/bin:$PATH
+    - echo "$YC_SERVICE_ACCOUNT_KEY_JSON_B64" | base64 -d > key.json
+    # Логинимся через сервисный аккаунт
+    - export YC_SERVICE_ACCOUNT_KEY_FILE=$(pwd)/key.json
+
+    - yc config set service-account-key key.json
+    - yc config set cloud-id $YC_CLOUD_ID
+    - yc config set folder-id $YC_FOLDER_ID
+    # Получаем kubeconfig для кластера
+    - yc managed-kubernetes cluster get-credentials --id $YC_CLUSTER_ID --external

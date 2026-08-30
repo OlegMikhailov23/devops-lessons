@@ -1,0 +1,45 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "momo-frontend.fullname" . }}
+  labels:
+    {{- include "momo-frontend.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  {{- with .Values.ingress.ingressClassName }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range $rule := .Values.ingress.rules }}
+    - host: {{ $rule.host | quote }}
+      http:
+        paths:
+          {{- range $path := $rule.http.paths }}
+          {{- if $path.service }}
+          - path: {{ $path.path }}
+            {{- with $path.pathType }}
+            pathType: {{ . }}
+            {{- end }}
+            backend:
+              service:
+                name: {{ $path.service.name | default (include "momo-frontend.fullname" $) }}
+                port:
+                  number: {{ $path.service.port }}
+          {{- else }}
+          {{- fail (printf "service is missing for path %s in host %s" $path.path $rule.host) }}
+          {{- end }}
+          {{- end }}
+    {{- end }}
+{{- end }}

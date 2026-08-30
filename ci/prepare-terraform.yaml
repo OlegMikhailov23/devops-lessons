@@ -1,0 +1,30 @@
+.prepare_terraform:
+  before_script:
+    - apk add --no-cache curl unzip bash jq
+    # Сохраняем ключ сервисного аккаунта
+    - echo "$YC_SERVICE_ACCOUNT_KEY_JSON_B64" | base64 -d > key.json
+    - export TF_VAR_yc_service_account_key_file=$(pwd)/key.json
+    - export TF_VAR_yc_s3_access_key=$YC_S3_ACCESS_KEY
+    - export TF_VAR_yc_s3_secret_key=$YC_S3_SECRET_KEY
+    - export TF_VAR_yc_network_id=$YC_NETWORK_ID
+    - export TF_VAR_yc_subnet_id=$YC_SUBNET_ID
+    - export TF_VAR_yc_service_acc_id=$(jq -r .service_account_id key.json)
+    # Скачиваем и устанавливаем Terraform (если не доступен в СI)
+    # - curl -L 'https://hashicorp-releases.yandexcloud.net/terraform/1.9.5/terraform_1.9.5_linux_amd64.zip' -o terraform.zip
+    # - unzip terraform.zip
+    # - chmod +x terraform
+    # - mv terraform /usr/local/bin/
+
+    # Настройка зеркала YC для провайдеров Terraform
+    - |
+      cat > ~/.terraformrc <<EOF
+      provider_installation {
+        network_mirror {
+          url = "https://terraform-mirror.yandexcloud.net/"
+          include = ["registry.terraform.io/*/*"]
+        }
+        direct {
+          exclude = ["registry.terraform.io/*/*"]
+        }
+      }
+      EOF

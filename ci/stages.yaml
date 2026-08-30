@@ -1,0 +1,12 @@
+stages:
+  - trigger_downstream
+  - build
+  - test
+  - release-debug
+  - release-stage
+  - deploy-debug
+  - deploy-stage
+  - release-prod
+  - pre-deploy-prod
+  - deploy-prod
+  - infra

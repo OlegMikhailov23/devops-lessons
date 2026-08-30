@@ -1,0 +1,102 @@
+---
+momobackend:
+  replicaCount: 1
+
+  image:
+      repository: cr.yandex/crpg54t3i3e4plmlpam3/momo-store-backend
+
+      tag: "stable"
+      pullPolicy: Always
+      pullSecrets:
+        - gitlab-regcred
+
+  service:
+      type: ClusterIP
+      port: 8080
+      targetPort: 8081
+
+  resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "250m"
+        memory: "256Mi"
+
+  env:
+      config:
+        VIRTUAL_HOST: "backend"
+        VIRTUAL_PORT: "8080"
+      secretRef: momo-backend-secret
+
+  vpa:
+      enabled: true
+      updateMode: "Off"
+      minAllowed:
+        cpu: 100m
+        memory: 128Mi
+      maxAllowed:
+        cpu: 1
+        memory: 500Mi
+
+momofrontend:
+  replicaCount: 1
+
+  revisionHistoryLimit: 12
+
+  image:
+    repository: cr.yandex/crpg54t3i3e4plmlpam3/momo-store-frontend
+
+    tag: "stable"
+    pullPolicy: Always
+    pullSecrets:
+      - gitlab-regcred
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+
+  service:
+    port: 80
+    type: ClusterIP
+
+  ingress:
+    enabled: true
+    annotations:
+      cert-manager.io/cluster-issuer: "http01-clusterissuer"
+    ingressClassName: "nginx"
+    tls:
+      - hosts:
+          - "momo-olmi.ru"
+        secretName: momo-tls
+    rules:
+    - host: "momo-olmi.ru"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            service:
+              port: 80
+          - path: /api/
+            pathType: Prefix
+            service:
+              name: momobackend
+              port: 8080
+
+  env:
+    config:
+      nginx.conf: |
+        server {
+          listen 80;
+
+          location / {
+            root   /usr/share/nginx/html;
+            index  index.html;
+            
+            try_files $uri $uri/ /index.html;
+          }
+        }

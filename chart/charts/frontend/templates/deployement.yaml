@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "momo-frontend.fullname" . }}
+  labels:
+    {{- include "momo-frontend.labels" . | nindent 4 }}
+  annotations:
+    imageTimestamp: "{{ now | unixEpoch }}"
+spec:
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "momo-frontend.selectorLabels" . | nindent 8 }}
+  template:
+    metadata:
+      annotations:
+        checksum/image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}-{{ now | unixEpoch }}"
+      labels:
+        {{- include "momo-frontend.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          ## Важно, чтобы конфиг nginx прокинулся start
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: nginx.conf
+          ## Важно, чтобы конфиг nginx прокинулся end
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ## Важно, чтобы конфиг nginx прокинулся start
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: {{ include "momo-frontend.name" . }}-config
+      ## Важно, чтобы конфиг nginx прокинулся end
+      {{- if .Values.image.pullSecrets }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "momo-frontend.name" . }}-config
+      imagePullSecrets:
+        {{- range .Values.image.pullSecrets }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}

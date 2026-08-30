@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "momo-backend.fullname" . }}-deployment
+  labels:
+    app: {{ include "momo-backend.name" . }}
+    {{- include "momo-backend.labels" . | nindent 4 }}
+spec:
+  revisionHistoryLimit: 12
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "momo-backend.name" . }}
+  template:
+    metadata:
+      annotations:
+        # Важно указать порт, который слушает pod
+        prometheus.io/port: "8081"
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+      labels:
+        app: {{ include "momo-backend.name" . }}
+    spec:
+      containers:
+        - name: {{ include "momo-backend.name" . }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "momo-backend.name" . }}-config
+            - secretRef:
+                name: momo-backend-secret
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      imagePullSecrets:
+{{- range .Values.image.pullSecrets }}
+        - name: {{ . }}
+{{- end }}
+

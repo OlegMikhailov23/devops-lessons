@@ -1,0 +1,43 @@
+include: 
+  - local: ci/stages.yaml
+  - local: ci/prepare-terraform.yaml
+
+variables:
+  TF_VAR_cloud_id: $YC_CLOUD_ID
+  TF_VAR_folder_id: $YC_FOLDER_ID
+  TF_VAR_zone: $YC_ZONE
+
+plan-cluster:
+  stage: infra
+  image:
+    name: hashicorp/terraform:1.9.5
+    entrypoint: [""]
+  extends: .prepare_terraform
+  script:
+    - cd infra/terraform
+    - |
+      terraform init \
+        -backend-config="access_key=$YC_S3_ACCESS_KEY" \
+        -backend-config="secret_key=$YC_S3_SECRET_KEY"
+
+    - terraform plan
+
+deploy-cluster:
+  stage: infra
+  needs:
+    - plan-cluster
+  image:
+    name: hashicorp/terraform:1.9.5
+    entrypoint: [""]
+  extends: .prepare_terraform
+  script:
+    - cd infra/terraform
+    - |
+      terraform init \
+        -backend-config="access_key=$YC_S3_ACCESS_KEY" \
+        -backend-config="secret_key=$YC_S3_SECRET_KEY"
+
+    - terraform apply -auto-approve
+  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
