@@ -1,4 +1,4 @@
-# Momo Store DevOps Learning Project
+# DevOps Learning Project
 
 This repository is a small educational example for learning CI/CD and
 infrastructure automation around a simple web application.
