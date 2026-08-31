@@ -9,10 +9,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - nexus.momo-olmi.ru
+    - "<replace with your host>"
     secretName: nexus-tls-cert
   rules:
-  - host: nexus.momo-olmi.ru
+  - host: "<replace with your host>"
     http:
       paths:
       - path: /
